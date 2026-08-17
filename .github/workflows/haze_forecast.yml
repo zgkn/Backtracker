@@ -1,0 +1,63 @@
+name: Scheduled Haze Forecast Run & Deploy Pages
+
+on:
+  schedule:
+    # 06:00 UTC = 2:00 PM SGT
+    # 18:00 UTC = 2:00 AM SGT
+    - cron: '0 6,18 * * *'
+  workflow_dispatch:
+
+# Grant permissions required for GitHub Pages deployments
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages'
+  cancel-in-progress: true
+
+jobs:
+  run-and-deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install System Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libeccodes-dev libproj-dev proj-bin libgeos-dev
+
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install ecmwf-opendata xarray pandas numpy scipy matplotlib folium cfgrib eccodes requests netCDF4 alphashape shapely
+
+    - name: Execute Haze Analysis Script
+      run: |
+        python haze_script.py
+
+    - name: Prepare Site Directory
+      run: |
+        mkdir -p _site
+        cp haze_transport_map.html _site/index.html
+
+    - name: Upload Pages Artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: '_site'
+
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
+
