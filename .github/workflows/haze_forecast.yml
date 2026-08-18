@@ -47,17 +47,28 @@ jobs:
       run: |
         python haze_script.py
 
+    # 1. Provide the standalone HTML file as a normal downloadable artifact
+    - name: Upload Standalone HTML Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: haze-transport-map-html
+        path: haze_transport_map.html
+        retention-days: 7
+
+    # 2. Prepare the directory specifically for GitHub Pages
     - name: Prepare Site Directory
       run: |
         mkdir -p _site
         cp haze_transport_map.html _site/index.html
 
+    # 3. Package the _site directory into the required .tar artifact for Pages
     - name: Upload Pages Artifact
       uses: actions/upload-pages-artifact@v3
       with:
         path: '_site'
+        name: github-pages
 
+    # 4. Deploy the .tar artifact to the live URL
     - name: Deploy to GitHub Pages
       id: deployment
       uses: actions/deploy-pages@v4
-
