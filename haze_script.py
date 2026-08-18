@@ -11,8 +11,9 @@ from shapely.geometry import Polygon, MultiPolygon
 
 
 # --- 1. 48-Hour Backtrack Logic ---
-def perform_48h_backtrack(nc_file, start_lat, start_lon, interval=3):
-    ds = xr.open_dataset(nc_file).sortby('step')
+# Changed to accept 'ds' (Dataset object) directly instead of 'nc_file' (file path)
+def perform_48h_backtrack(ds, start_lat, start_lon, interval=3):
+    ds = ds.sortby('step')
     time_numeric = ds.step.values.astype('timedelta64[h]').astype(float)
     if time_numeric.ndim > 1: 
         time_numeric = time_numeric.flatten()
@@ -103,7 +104,7 @@ def build_folium_map_by_level(df_48h, run_time_str, valid_time_str, duration=48,
         '925_850_avg':  {'color': '#9b59b6', 'dash': '10, 5','label': '925 + 850 hPa Avg Wind Layer'}
     }
 
-    # Floating Info Box positioned at bottom-left to avoid blocking LayerControl
+    # Floating Info Box positioned cleanly at bottom-left
     info_html = f'''
     <div style="
         position: fixed; 
@@ -200,7 +201,6 @@ def build_folium_map_by_level(df_48h, run_time_str, valid_time_str, duration=48,
 # --- 3. Main Execution ---
 def main():
     target_grib = "latest_wind.grib"
-    target_nc = "haze_forecast.nc"
     html_map_file = "haze_transport_map.html"
 
     print("🚀 Requesting 72-hour ECMWF HRES Forecast...")
@@ -227,18 +227,9 @@ def main():
     # Slice SE Asia Domain
     ds_region = ds.sel(latitude=slice(20, -10), longitude=slice(90, 130))
 
-    # OPTION 1 FIX: Clean serialization attributes across variables and coordinates to prevent NetCDF decoding errors
-    for var in list(ds_region.variables) + list(ds_region.coords):
-        if var in ds_region:
-            ds_region[var].attrs.pop('dtype', None)
-
-    ds_region.to_netcdf(target_nc)
-
-    if os.path.exists(target_grib):
-        os.remove(target_grib)
-
+    # Pass the dataset directly in-memory (Skipping intermediate NetCDF file entirely!)
     print("🔄 Calculating 48-hour backtracks...")
-    df_48h = perform_48h_backtrack(target_nc, 1.29, 103.85)
+    df_48h = perform_48h_backtrack(ds_region, 1.29, 103.85)
 
     print("🗺️ Building interactive Folium map...")
     haze_map = build_folium_map_by_level(
@@ -248,12 +239,12 @@ def main():
         duration=48
     )
     haze_map.save(html_map_file)
-    print(f"✅ Saved interactive map to {html_map_file}")
+    print(f"✅ Saved interactive map artifact to {html_map_file}")
 
-    if os.path.exists(target_nc):
-        os.remove(target_nc)
+    # Cleanup the original GRIB download
+    if os.path.exists(target_grib):
+        os.remove(target_grib)
 
 
 if __name__ == "__main__":
     main()
-
