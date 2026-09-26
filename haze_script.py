@@ -94,7 +94,7 @@ def perform_48h_backtrack(ds, start_lat, start_lon, interval=3):
 
 # --- 2. Folium Interactive Map Builder ---
 def build_folium_map_by_level(df_48h, run_time_str, valid_time_str, duration=48, target_lat=1.29, target_lon=103.85):
-    m = folium.Map(location=[target_lat, target_lon], zoom_start=6, tiles='cartodbpositron')
+    m = folium.Map(location=[target_lat, target_lon], zoom_start=6, tiles='OpenStreetMap')
 
     # Styles and display configurations
     lvl_styles = {
