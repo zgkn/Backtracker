@@ -157,6 +157,13 @@ def build_folium_timestepped_map(df_backtrack, run_time_str, valid_time_str, bas
     lead_hours = sorted(df_backtrack.groupby('traj_id')['hour'].max().unique())
     step_hours = int(abs(lead_hours[1] - lead_hours[0])) if len(lead_hours) > 1 else 3
     period = f'PT{step_hours}H'
+    # duration controls how long a feature stays visible *after* its own
+    # timestamp - if it equals period exactly, a step's line is still inside
+    # its visibility window at the exact instant the next step's line starts,
+    # so they render on top of each other ("two lines per level") whenever the
+    # slider is sitting still on a step. Trim it 1s short of a full period so
+    # the previous line always fully disappears before the next one appears.
+    visible_duration = f'PT{step_hours * 3600 - 1}S'
 
     features = []
     for tid, traj in df_backtrack.groupby('traj_id'):
@@ -188,7 +195,7 @@ def build_folium_timestepped_map(df_backtrack, run_time_str, valid_time_str, bas
     plugins.TimestampedGeoJson(
         {'type': 'FeatureCollection', 'features': features},
         period=period,
-        duration=period,
+        duration=visible_duration,
         transition_time=500,
         auto_play=False,
         loop=False,
