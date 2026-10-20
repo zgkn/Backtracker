@@ -8,9 +8,9 @@ import folium
 from folium import plugins
 
 
-# --- 1. 48-Hour Backtrack Logic ---
+# --- 1. Backtrack Trajectory Logic ---
 # Changed to accept 'ds' (Dataset object) directly instead of 'nc_file' (file path)
-def perform_48h_backtrack(ds, start_lat, start_lon, interval=3):
+def perform_backtrack(ds, start_lat, start_lon, interval=3, duration=48):
     ds = ds.sortby('step')
     time_numeric = ds.step.values.astype('timedelta64[h]').astype(float)
     if time_numeric.ndim > 1: 
@@ -62,7 +62,6 @@ def perform_48h_backtrack(ds, start_lat, start_lon, interval=3):
 
     results = []
     latest_t = time_numeric[-1]
-    duration = 48  # 48 hours backward integration
 
     levels_to_run = ['1000', '925', '850', '925_850_avg']
 
@@ -70,7 +69,7 @@ def perform_48h_backtrack(ds, start_lat, start_lon, interval=3):
         u_func = RegularGridInterpolator((time_numeric, lats, lons), u_mats[lvl])
         v_func = RegularGridInterpolator((time_numeric, lats, lons), v_mats[lvl])
 
-        start_times = np.arange(latest_t, duration - 0.1, -interval)
+        start_times = np.arange(latest_t, -0.1, -interval)
 
         for start_t in start_times:
             curr_lat, curr_lon, curr_t = start_lat, start_lon, start_t
@@ -91,16 +90,26 @@ def perform_48h_backtrack(ds, start_lat, start_lon, interval=3):
 
 
 # --- 2. Folium Interactive Map Builder ---
-def build_folium_timestepped_map(df_48h, run_time_str, valid_time_str, base_time, duration=48, target_lat=1.29, target_lon=103.85):
+def build_folium_timestepped_map(df_backtrack, run_time_str, valid_time_str, base_time, duration=48, target_lat=1.29, target_lon=103.85):
     m = folium.Map(location=[target_lat, target_lon], zoom_start=6, tiles='OpenStreetMap')
 
     # Styles and display configurations
+    ordered_levels = ['1000', '925', '850', '925_850_avg']
     lvl_styles = {
         '1000':         {'color': '#e74c3c', 'dash': '0',    'label': '1000 hPa (Boundary Layer)'},
         '925':          {'color': '#f39c12', 'dash': '5, 5', 'label': '925 hPa (Low Level)'},
         '850':          {'color': '#2ecc71', 'dash': '2, 5', 'label': '850 hPa (Mid-Low Level)'},
         '925_850_avg':  {'color': '#9b59b6', 'dash': '10, 5','label': '925 + 850 hPa Avg Wind Layer'}
     }
+
+    # Legend rows mirror each level's actual line color/dash style on the map
+    legend_rows = ''.join(
+        f'<div style="display:flex; align-items:center; margin-top:4px;">'
+        f'<span style="display:inline-block; width:22px; height:0; '
+        f'border-top:3px {"dashed" if lvl_styles[lvl]["dash"] != "0" else "solid"} {lvl_styles[lvl]["color"]}; '
+        f'margin-right:6px;"></span>{lvl_styles[lvl]["label"]}</div>'
+        for lvl in ordered_levels
+    )
 
     # Floating Info Box positioned at top-right, clear of the time slider
     # control (leaflet.timedimension docks bottom-left and spans most of the
@@ -126,6 +135,10 @@ def build_folium_timestepped_map(df_48h, run_time_str, valid_time_str, base_time
         <b>Forecast Valid:</b> {valid_time_str}<br>
         <b>Backtrack Period:</b> {duration} Hours<br>
         <b>Target:</b> {target_lat}°N, {target_lon}°E
+        <div style="margin-top:8px; padding-top:6px; border-top:1px solid #ccc;">
+            <b>Legend — Wind Level:</b>
+            {legend_rows}
+        </div>
     </div>
     '''
     m.get_root().html.add_child(folium.Element(info_html))
@@ -137,16 +150,16 @@ def build_folium_timestepped_map(df_48h, run_time_str, valid_time_str, base_time
         icon=folium.Icon(color='red', icon='info-sign')
     ).add_to(m)
 
-    # Each trajectory ('traj_id') is one level's 48h backtrack released at a single
+    # Each trajectory ('traj_id') is one level's backtrack released at a single
     # forecast lead time ("T+Xh"). Instead of overlaying every lead time at once,
     # give each one a real valid-time stamp so the time slider steps through them
     # one forecast timestep at a time.
-    lead_hours = sorted(df_48h.groupby('traj_id')['hour'].max().unique())
+    lead_hours = sorted(df_backtrack.groupby('traj_id')['hour'].max().unique())
     step_hours = int(abs(lead_hours[1] - lead_hours[0])) if len(lead_hours) > 1 else 3
     period = f'PT{step_hours}H'
 
     features = []
-    for tid, traj in df_48h.groupby('traj_id'):
+    for tid, traj in df_backtrack.groupby('traj_id'):
         lvl = traj['level'].iloc[0]
         style = lvl_styles.get(lvl, {'color': 'gray', 'dash': '0', 'label': f'{lvl} Layer'})
 
@@ -193,7 +206,10 @@ def build_folium_timestepped_map(df_48h, run_time_str, valid_time_str, base_time
 # --- 3. Main Execution ---
 def main():
     target_grib = "latest_wind.grib"
+    backfill_grib = "previous_wind.grib"
     html_map_file = "haze_transport_map.html"
+    BACKTRACK_HOURS = 24
+    STEP_INTERVAL = 3
 
     # 90h is the longest step range the ECMWF open-data HRES pressure-level
     # product supports on every cycle (00/12z reach 240h, but 06/18z cap out
@@ -205,7 +221,7 @@ def main():
         levtype="pl",
         levelist=[850, 925, 1000],
         param=["u", "v"],
-        step=list(range(0, 91, 3)),
+        step=list(range(0, 91, STEP_INTERVAL)),
         target=target_grib
     )
 
@@ -219,27 +235,60 @@ def main():
     print(f"📊 Model Base Run: {run_time_str}")
     print(f"📊 Forecast Range: Up to {valid_time_str}")
 
+    # The earliest forecast timesteps of this run (T+0h .. T+21h) don't have
+    # BACKTRACK_HOURS of their own history yet, so backfill that history from
+    # the previous model run (HRES cycles are 6h apart, so 24h back lands
+    # exactly on a cycle) and splice it onto this run's wind field.
+    prev_time = base_time - pd.Timedelta(hours=BACKTRACK_HOURS)
+    print(f"🚀 Requesting backfill from previous model run ({prev_time.strftime('%Y-%m-%d %H:%M UTC')})...")
+    client.retrieve(
+        type="fc",
+        levtype="pl",
+        levelist=[850, 925, 1000],
+        param=["u", "v"],
+        date=prev_time.strftime('%Y-%m-%d'),
+        time=int(prev_time.hour),
+        step=list(range(0, BACKTRACK_HOURS + 1, STEP_INTERVAL)),
+        target=backfill_grib
+    )
+    ds_backfill = xr.open_dataset(backfill_grib, engine="cfgrib")
+
     # Slice SE Asia Domain
     ds_region = ds.sel(latitude=slice(20, -10), longitude=slice(90, 130))
+    ds_backfill_region = ds_backfill.sel(latitude=slice(20, -10), longitude=slice(90, 130))
+
+    # Re-express the backfill run's steps as hours relative to *this* run's
+    # base time (negative = before it), drop its last step since it's the
+    # same instant as this run's own step=0, and stitch the two onto one
+    # continuous time axis.
+    ds_backfill_region = ds_backfill_region.assign_coords(
+        step=ds_backfill_region.step - np.timedelta64(BACKTRACK_HOURS, 'h')
+    ).isel(step=slice(0, -1))
+    ds_region = xr.concat(
+        [ds_backfill_region.drop_vars(['time', 'valid_time'], errors='ignore'),
+         ds_region.drop_vars(['time', 'valid_time'], errors='ignore')],
+        dim='step'
+    )
 
     # Pass the dataset directly in-memory (Skipping intermediate NetCDF file entirely!)
-    print("🔄 Calculating 48-hour backtracks...")
-    df_48h = perform_48h_backtrack(ds_region, 1.29, 103.85)
+    print(f"🔄 Calculating {BACKTRACK_HOURS}-hour backtracks for every forecast timestep...")
+    df_backtrack = perform_backtrack(ds_region, 1.29, 103.85, interval=STEP_INTERVAL, duration=BACKTRACK_HOURS)
 
     print("🗺️ Building interactive Folium map...")
     haze_map = build_folium_timestepped_map(
-        df_48h,
+        df_backtrack,
         run_time_str=run_time_str,
         valid_time_str=valid_time_str,
         base_time=base_time,
-        duration=48
+        duration=BACKTRACK_HOURS
     )
     haze_map.save(html_map_file)
     print(f"✅ Saved interactive map artifact to {html_map_file}")
 
-    # Cleanup the original GRIB download
-    if os.path.exists(target_grib):
-        os.remove(target_grib)
+    # Cleanup the GRIB downloads
+    for f in (target_grib, backfill_grib):
+        if os.path.exists(f):
+            os.remove(f)
 
 
 if __name__ == "__main__":
