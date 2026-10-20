@@ -208,7 +208,7 @@ def main():
     target_grib = "latest_wind.grib"
     backfill_grib = "previous_wind.grib"
     html_map_file = "haze_transport_map.html"
-    BACKTRACK_HOURS = 24
+    BACKTRACK_HOURS = 48
     STEP_INTERVAL = 3
 
     # 90h is the longest step range the ECMWF open-data HRES pressure-level
@@ -235,10 +235,11 @@ def main():
     print(f"📊 Model Base Run: {run_time_str}")
     print(f"📊 Forecast Range: Up to {valid_time_str}")
 
-    # The earliest forecast timesteps of this run (T+0h .. T+21h) don't have
-    # BACKTRACK_HOURS of their own history yet, so backfill that history from
-    # the previous model run (HRES cycles are 6h apart, so 24h back lands
-    # exactly on a cycle) and splice it onto this run's wind field.
+    # The earliest forecast timesteps of this run don't have BACKTRACK_HOURS
+    # of their own history yet, so backfill that history from the previous
+    # model run (HRES cycles are 6h apart, so BACKTRACK_HOURS back lands
+    # exactly on a cycle as long as it's a multiple of 6) and splice it onto
+    # this run's wind field.
     prev_time = base_time - pd.Timedelta(hours=BACKTRACK_HOURS)
     print(f"🚀 Requesting backfill from previous model run ({prev_time.strftime('%Y-%m-%d %H:%M UTC')})...")
     client.retrieve(
