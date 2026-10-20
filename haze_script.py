@@ -6,8 +6,6 @@ from scipy.interpolate import RegularGridInterpolator
 from ecmwf.opendata import Client
 import folium
 from folium import plugins
-import alphashape
-from shapely.geometry import Polygon, MultiPolygon
 
 
 # --- 1. 48-Hour Backtrack Logic ---
@@ -93,7 +91,7 @@ def perform_48h_backtrack(ds, start_lat, start_lon, interval=3):
 
 
 # --- 2. Folium Interactive Map Builder ---
-def build_folium_map_by_level(df_48h, run_time_str, valid_time_str, duration=48, target_lat=1.29, target_lon=103.85):
+def build_folium_timestepped_map(df_48h, run_time_str, valid_time_str, base_time, duration=48, target_lat=1.29, target_lon=103.85):
     m = folium.Map(location=[target_lat, target_lon], zoom_start=6, tiles='OpenStreetMap')
 
     # Styles and display configurations
@@ -137,62 +135,54 @@ def build_folium_map_by_level(df_48h, run_time_str, valid_time_str, duration=48,
         icon=folium.Icon(color='red', icon='info-sign')
     ).add_to(m)
 
-    ordered_levels = ['1000', '925', '850', '925_850_avg']
+    # Each trajectory ('traj_id') is one level's 48h backtrack released at a single
+    # forecast lead time ("T+Xh"). Instead of overlaying every lead time at once,
+    # give each one a real valid-time stamp so the time slider steps through them
+    # one forecast timestep at a time.
+    lead_hours = sorted(df_48h.groupby('traj_id')['hour'].max().unique())
+    step_hours = int(abs(lead_hours[1] - lead_hours[0])) if len(lead_hours) > 1 else 3
+    period = f'PT{step_hours}H'
 
-    for lvl in ordered_levels:
-        if lvl not in df_48h['level'].unique():
-            continue
-
+    features = []
+    for tid, traj in df_48h.groupby('traj_id'):
+        lvl = traj['level'].iloc[0]
         style = lvl_styles.get(lvl, {'color': 'gray', 'dash': '0', 'label': f'{lvl} Layer'})
-        fg = folium.FeatureGroup(name=style['label'], show=True)
-        subset_lvl = df_48h[df_48h['level'] == lvl]
 
-        all_level_pts = []
+        start_t = traj['hour'].max()
+        valid_dt = base_time + pd.Timedelta(hours=float(start_t))
+        timestamp = valid_dt.isoformat()
 
-        # 1. Plot individual trajectory lines
-        for tid in subset_lvl['traj_id'].unique():
-            traj = subset_lvl[subset_lvl['traj_id'] == tid]
-            coords = list(zip(traj['lat'], traj['lon']))
-            all_level_pts.extend([(lon, lat) for lat, lon in coords])
+        traj = traj.sort_values('hour', ascending=False)
+        coords = traj[['lon', 'lat']].values.tolist()
 
-            folium.PolyLine(
-                locations=coords,
-                color=style['color'],
-                weight=2,
-                opacity=0.7,
-                dash_array=style['dash'],
-                tooltip=f"Traj: {tid} | Layer: {lvl}"
-            ).add_to(fg)
+        features.append({
+            'type': 'Feature',
+            'geometry': {'type': 'LineString', 'coordinates': coords},
+            'properties': {
+                'times': [timestamp] * len(coords),
+                'style': {
+                    'color': style['color'],
+                    'weight': 2.5,
+                    'opacity': 0.85,
+                    'dashArray': style['dash'],
+                },
+                'popup': f"<b>{style['label']}</b><br>Forecast Step: T+{int(start_t)}h<br>Valid: {valid_dt.strftime('%Y-%m-%d %H:%M UTC')}",
+            },
+        })
 
-        # 2. Compute Alpha Shape Concave Hull to hug trajectory paths
-        if len(all_level_pts) >= 4:
-            pts_array = np.array(all_level_pts)
-            alpha_shape = alphashape.alphashape(pts_array, alpha=1.2)
+    plugins.TimestampedGeoJson(
+        {'type': 'FeatureCollection', 'features': features},
+        period=period,
+        duration=period,
+        transition_time=500,
+        auto_play=False,
+        loop=False,
+        add_last_point=False,
+        loop_button=True,
+        time_slider_drag_update=True,
+        date_options='YYYY-MM-DD HH:mm',
+    ).add_to(m)
 
-            def add_polygon_to_map(poly_geom):
-                if poly_geom.is_empty:
-                    return
-                ext_coords = [[lat, lon] for lon, lat in poly_geom.exterior.coords]
-                folium.Polygon(
-                    locations=ext_coords,
-                    color=style['color'],
-                    fill=True,
-                    fill_color=style['color'],
-                    fill_opacity=0.18,
-                    weight=1.5,
-                    popup=f"<b>48h Concave Transport Corridor:</b> {style['label']}"
-                ).add_to(fg)
-
-            if isinstance(alpha_shape, Polygon):
-                add_polygon_to_map(alpha_shape)
-            elif isinstance(alpha_shape, MultiPolygon):
-                for p in alpha_shape.geoms:
-                    add_polygon_to_map(p)
-
-        fg.add_to(m)
-
-    # UI Controls
-    folium.LayerControl(collapsed=False).add_to(m)
     plugins.Fullscreen().add_to(m)
 
     return m
@@ -232,10 +222,11 @@ def main():
     df_48h = perform_48h_backtrack(ds_region, 1.29, 103.85)
 
     print("🗺️ Building interactive Folium map...")
-    haze_map = build_folium_map_by_level(
-        df_48h, 
-        run_time_str=run_time_str, 
-        valid_time_str=valid_time_str, 
+    haze_map = build_folium_timestepped_map(
+        df_48h,
+        run_time_str=run_time_str,
+        valid_time_str=valid_time_str,
+        base_time=base_time,
         duration=48
     )
     haze_map.save(html_map_file)

@@ -41,7 +41,7 @@ jobs:
     - name: Install Python Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install ecmwf-opendata xarray pandas numpy scipy matplotlib folium cfgrib eccodes requests netCDF4 alphashape shapely
+        pip install ecmwf-opendata xarray pandas numpy scipy matplotlib folium cfgrib eccodes requests netCDF4
 
     - name: Execute Haze Analysis Script
       run: |
