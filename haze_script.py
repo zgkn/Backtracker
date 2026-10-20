@@ -102,12 +102,14 @@ def build_folium_timestepped_map(df_48h, run_time_str, valid_time_str, base_time
         '925_850_avg':  {'color': '#9b59b6', 'dash': '10, 5','label': '925 + 850 hPa Avg Wind Layer'}
     }
 
-    # Floating Info Box positioned cleanly at bottom-left
+    # Floating Info Box positioned at top-right, clear of the time slider
+    # control (leaflet.timedimension docks bottom-left and spans most of the
+    # map width, especially on narrow/mobile viewports).
     info_html = f'''
     <div style="
-        position: fixed; 
-        bottom: 30px; left: 10px; 
-        width: 250px; height: auto; 
+        position: fixed;
+        top: 10px; right: 10px;
+        width: 250px; max-width: calc(100vw - 20px); height: auto;
         background-color: rgba(255, 255, 255, 0.95); 
         border: 2px solid #2c3e50; 
         border-radius: 8px;
@@ -193,14 +195,17 @@ def main():
     target_grib = "latest_wind.grib"
     html_map_file = "haze_transport_map.html"
 
-    print("🚀 Requesting 72-hour ECMWF HRES Forecast...")
+    # 90h is the longest step range the ECMWF open-data HRES pressure-level
+    # product supports on every cycle (00/12z reach 240h, but 06/18z cap out
+    # at 90h) - going further would make the 06/18z runs fail outright.
+    print("🚀 Requesting 90-hour ECMWF HRES Forecast...")
     client = Client(source="azure")
     client.retrieve(
         type="fc",
         levtype="pl",
         levelist=[850, 925, 1000],
         param=["u", "v"],
-        step=list(range(0, 73, 3)),
+        step=list(range(0, 91, 3)),
         target=target_grib
     )
 
