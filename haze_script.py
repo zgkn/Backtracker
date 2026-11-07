@@ -165,6 +165,11 @@ def build_folium_timestepped_map(df_backtrack, run_time_str, valid_time_str, bas
     # the previous line always fully disappears before the next one appears.
     visible_duration = f'PT{step_hours * 3600 - 1}S'
 
+    # Day-interval markers along each line, one per full 24h of backtrack
+    # depth, so the 1-day spacing along a multi-day line is visible at a
+    # glance (hover for the exact day count).
+    max_days = int(duration // 24)
+
     features = []
     for tid, traj in df_backtrack.groupby('traj_id'):
         lvl = traj['level'].iloc[0]
@@ -192,6 +197,29 @@ def build_folium_timestepped_map(df_backtrack, run_time_str, valid_time_str, bas
             },
         })
 
+        traj_by_hour = traj.set_index('hour')
+        for d in range(1, max_days + 1):
+            mark_hour = start_t - 24 * d
+            if mark_hour not in traj_by_hour.index:
+                continue
+            mark_row = traj_by_hour.loc[mark_hour]
+            features.append({
+                'type': 'Feature',
+                'geometry': {'type': 'Point', 'coordinates': [mark_row['lon'], mark_row['lat']]},
+                'properties': {
+                    'times': [timestamp],
+                    'icon': 'circle',
+                    'iconstyle': {
+                        'color': style['color'],
+                        'fillColor': style['color'],
+                        'fillOpacity': 0.9,
+                        'radius': 4,
+                        'weight': 1,
+                    },
+                    'tooltip': f"-{d}d ({style['label']})",
+                },
+            })
+
     plugins.TimestampedGeoJson(
         {'type': 'FeatureCollection', 'features': features},
         period=period,
@@ -213,10 +241,13 @@ def build_folium_timestepped_map(df_backtrack, run_time_str, valid_time_str, bas
 # --- 3. Main Execution ---
 def main():
     target_grib = "latest_wind.grib"
-    backfill_grib = "previous_wind.grib"
     html_map_file = "haze_transport_map.html"
-    BACKTRACK_HOURS = 48
+    BACKTRACK_HOURS = 120
     STEP_INTERVAL = 3
+    # Each backfill fetch must stay within what *every* HRES cycle (00/06/12/18z)
+    # publishes - 06z/18z cycles cap out at 90h, so 24h per segment leaves
+    # comfortable margin regardless of which cycle a segment lands on.
+    BACKFILL_CHUNK_HOURS = 24
 
     # 90h is the longest step range the ECMWF open-data HRES pressure-level
     # product supports on every cycle (00/12z reach 240h, but 06/18z cap out
@@ -242,41 +273,59 @@ def main():
     print(f"📊 Model Base Run: {run_time_str}")
     print(f"📊 Forecast Range: Up to {valid_time_str}")
 
-    # The earliest forecast timesteps of this run don't have BACKTRACK_HOURS
-    # of their own history yet, so backfill that history from the previous
-    # model run (HRES cycles are 6h apart, so BACKTRACK_HOURS back lands
-    # exactly on a cycle as long as it's a multiple of 6) and splice it onto
-    # this run's wind field.
-    prev_time = base_time - pd.Timedelta(hours=BACKTRACK_HOURS)
-    print(f"🚀 Requesting backfill from previous model run ({prev_time.strftime('%Y-%m-%d %H:%M UTC')})...")
-    client.retrieve(
-        type="fc",
-        levtype="pl",
-        levelist=[850, 925, 1000],
-        param=["u", "v"],
-        date=prev_time.strftime('%Y-%m-%d'),
-        time=int(prev_time.hour),
-        step=list(range(0, BACKTRACK_HOURS + 1, STEP_INTERVAL)),
-        target=backfill_grib
-    )
-    ds_backfill = xr.open_dataset(backfill_grib, engine="cfgrib")
-
-    # Slice SE Asia Domain
+    # The earliest forecast timesteps of this run don't have BACKTRACK_HOURS of
+    # their own history yet, so backfill that history from a chain of earlier
+    # model runs, each covering one BACKFILL_CHUNK_HOURS-long segment, and
+    # splice them all onto this run's wind field. Chaining in small chunks
+    # (rather than one far-back fetch) keeps every single request within what
+    # *every* cycle hour publishes - a single fetch landing exactly
+    # BACKTRACK_HOURS back would always hit the same cycle-hour as this run
+    # (since it's a multiple of 24h), so for a 06z/18z run that would demand
+    # steps beyond its 90h cap and fail outright.
     ds_region = ds.sel(latitude=slice(20, -10), longitude=slice(90, 130))
-    ds_backfill_region = ds_backfill.sel(latitude=slice(20, -10), longitude=slice(90, 130))
+    ds_region = ds_region.drop_vars(['time', 'valid_time'], errors='ignore')
 
-    # Re-express the backfill run's steps as hours relative to *this* run's
-    # base time (negative = before it), drop its last step since it's the
-    # same instant as this run's own step=0, and stitch the two onto one
-    # continuous time axis.
-    ds_backfill_region = ds_backfill_region.assign_coords(
-        step=ds_backfill_region.step - np.timedelta64(BACKTRACK_HOURS, 'h')
-    ).isel(step=slice(0, -1))
-    ds_region = xr.concat(
-        [ds_backfill_region.drop_vars(['time', 'valid_time'], errors='ignore'),
-         ds_region.drop_vars(['time', 'valid_time'], errors='ignore')],
-        dim='step'
-    )
+    backfill_gribs = []
+    segments = []
+    offset = 0
+    remaining = BACKTRACK_HOURS
+    segment_index = 0
+    while remaining > 0:
+        chunk = min(BACKFILL_CHUNK_HOURS, remaining)
+        offset += chunk
+        seg_time = base_time - pd.Timedelta(hours=offset)
+        seg_grib = f"backfill_{segment_index}.grib"
+        backfill_gribs.append(seg_grib)
+
+        print(f"🚀 Requesting backfill segment {segment_index + 1} "
+              f"({seg_time.strftime('%Y-%m-%d %H:%M UTC')}, {chunk}h)...")
+        client.retrieve(
+            type="fc",
+            levtype="pl",
+            levelist=[850, 925, 1000],
+            param=["u", "v"],
+            date=seg_time.strftime('%Y-%m-%d'),
+            time=int(seg_time.hour),
+            step=list(range(0, chunk + 1, STEP_INTERVAL)),
+            target=seg_grib
+        )
+        ds_seg = xr.open_dataset(seg_grib, engine="cfgrib")
+        ds_seg_region = ds_seg.sel(latitude=slice(20, -10), longitude=slice(90, 130))
+
+        # Re-express this segment's steps as hours relative to *this* run's
+        # base time (negative = before it), and drop its last step since it's
+        # the same instant as the next (more recent) segment's own step=0.
+        ds_seg_region = ds_seg_region.assign_coords(
+            step=ds_seg_region.step - np.timedelta64(offset, 'h')
+        ).isel(step=slice(0, -1))
+        segments.append(ds_seg_region.drop_vars(['time', 'valid_time'], errors='ignore'))
+
+        remaining -= chunk
+        segment_index += 1
+
+    # Segments were fetched nearest-to-now first; concat needs them oldest-first.
+    segments.reverse()
+    ds_region = xr.concat(segments + [ds_region], dim='step')
 
     # Pass the dataset directly in-memory (Skipping intermediate NetCDF file entirely!)
     print(f"🔄 Calculating {BACKTRACK_HOURS}-hour backtracks for every forecast timestep...")
@@ -294,7 +343,7 @@ def main():
     print(f"✅ Saved interactive map artifact to {html_map_file}")
 
     # Cleanup the GRIB downloads
-    for f in (target_grib, backfill_grib):
+    for f in (target_grib, *backfill_gribs):
         if os.path.exists(f):
             os.remove(f)
 
