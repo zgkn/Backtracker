@@ -165,6 +165,11 @@ def build_folium_timestepped_map(df_backtrack, run_time_str, valid_time_str, bas
     # the previous line always fully disappears before the next one appears.
     visible_duration = f'PT{step_hours * 3600 - 1}S'
 
+    # Day-interval markers along each line, one per full 24h of backtrack
+    # depth, so the 1-day spacing along a multi-day line is visible at a
+    # glance (hover for the exact day count).
+    max_days = int(duration // 24)
+
     features = []
     for tid, traj in df_backtrack.groupby('traj_id'):
         lvl = traj['level'].iloc[0]
@@ -191,6 +196,29 @@ def build_folium_timestepped_map(df_backtrack, run_time_str, valid_time_str, bas
                 'popup': f"<b>{style['label']}</b><br>Forecast Step: T+{int(start_t)}h<br>Valid: {valid_dt.strftime('%Y-%m-%d %H:%M UTC')}",
             },
         })
+
+        traj_by_hour = traj.set_index('hour')
+        for d in range(1, max_days + 1):
+            mark_hour = start_t - 24 * d
+            if mark_hour not in traj_by_hour.index:
+                continue
+            mark_row = traj_by_hour.loc[mark_hour]
+            features.append({
+                'type': 'Feature',
+                'geometry': {'type': 'Point', 'coordinates': [mark_row['lon'], mark_row['lat']]},
+                'properties': {
+                    'times': [timestamp],
+                    'icon': 'circle',
+                    'iconstyle': {
+                        'color': style['color'],
+                        'fillColor': style['color'],
+                        'fillOpacity': 0.9,
+                        'radius': 4,
+                        'weight': 1,
+                    },
+                    'tooltip': f"-{d}d ({style['label']})",
+                },
+            })
 
     plugins.TimestampedGeoJson(
         {'type': 'FeatureCollection', 'features': features},
